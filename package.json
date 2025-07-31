@@ -42,7 +42,6 @@
     "electron-localshortcut": "^3.2.1",
     "express": "^5.1.0",
     "find-process": "^1.4.10",
-    "http-mitm-proxy": "^1.1.0",
     "http-proxy": "^1.18.1"
   }
 }

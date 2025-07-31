@@ -5,6 +5,15 @@ var isGameStreamingScreen = false;
 
 function toggleFullscreen(state) {
   var window = BrowserWindow.getAllWindows()[0];
+  if (!window) {
+    console.error("No browser window found to toggle fullscreen.");
+    return;
+  }
+  if (window.isDestroyed()) {
+    console.error("Browser window is destroyed, cannot toggle fullscreen.");
+    return;
+  }
+
   var actualState = window.isFullScreen();
   if (isFullScreen != state || actualState != state) {
     if (state || !isGameStreamingScreen) {
@@ -14,12 +23,20 @@ function toggleFullscreen(state) {
 
       if (state) {
         window.webContents.executeJavaScript(
-          "window.document.body.requestPointerLock();",
+          `
+          if (window.document.body.requestPointerLock) {
+            window.document.body.requestPointerLock()
+          };
+          `,
         );
         focusWindow();
       } else {
         window.webContents.executeJavaScript(
-          "window.document.body.exitPointerLock();",
+          `
+          if (window.document.body.exitPointerLock) {
+            window.document.body.exitPointerLock()
+          };
+          `,
         );
       }
     }
@@ -56,6 +73,7 @@ function focusWindow() {
 
 app.on("browser-window-created", async function (event, window) {
   window.on("leave-full-screen", async function (event, window) {
+    console.log("Window left fullscreen mode");
     event.preventDefault();
     if (isGameStreamingScreen) {
       toggleFullscreen(true);
