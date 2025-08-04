@@ -1,4 +1,5 @@
 const findProcess = require("find-process");
+const { BrowserWindow } = require("electron");
 
 var client;
 
@@ -21,6 +22,7 @@ function isRunning() {
 
 async function setActivity(title) {
   if (await isRunning()) {
+    var window = BrowserWindow.getAllWindows()[0];
     window.on("page-title-updated", async function (e, title) {
       Rpc(title);
     });
