@@ -4,7 +4,7 @@ const http = require("http");
 const httpProxy = require("http-proxy");
 const { app, session } = require("electron");
 
-var verbose = false; // Set to true for detailed logging
+var verbose = true; // Set to true for detailed logging
 
 // Mixed Content:
 // The page at 'https://play.geforcenow.com/games?game-id=<game_id>&lang=en_US&asset-id=<asset_id>' was loaded over HTTPS, but attempted to connect to the insecure WebSocket endpoint
@@ -15,6 +15,8 @@ var verbose = false; // Set to true for detailed logging
 const pacScript = `
   function FindProxyForURL(url, host) {
       var proxy = "PROXY PROXY_PLACEHOLDER";
+
+      console.log("FindProxyForURL called with URL: " + url + " and host: " + host);
 
       // Exclude WebSocket URLs from proxying
       if (url.indexOf("ws://") === 0 || url.indexOf("wss://") === 0) {
@@ -65,17 +67,15 @@ function servePacScript(proxyUrl, callback) {
   // --- Serve the PAC script on port 3000 ---
   pacScriptApp = express();
   pacScriptApp.get("/proxy.pac", (req, res) => {
-    if (verbose) {
-      console.log("Client requested PAC script");
-    }
+    console.log("[PAC-SERVER] Client requested PAC script from:", req.ip);
+    const script = generatePacScript(proxyUrl);
+    console.log("[PAC-SERVER] Serving PAC script:", script.substring(0, 100) + "...");
     res.type("application/x-ns-proxy-autoconfig");
-    res.send(generatePacScript(proxyUrl));
+    res.send(script);
   });
   pacScriptApp.listen(pac_port, () => {
     const pacUrl = `http://127.0.0.1:${pac_port}/proxy.pac`;
-    if (verbose) {
-      console.log(`PAC file served at ${pacUrl}`);
-    }
+    console.log(`[PAC-SERVER] PAC file server listening at ${pacUrl}`);
     callback(pacUrl);
   });
 }
@@ -93,14 +93,17 @@ const options = {
   rule: {
     // Override request handling
     *onError(requestDetail, error) {
-      console.error("Error in request:", requestDetail, error);
+      console.error("[ANYPROXY-ERROR] Request error:", requestDetail.url, error.message || error);
       // Handle errors here if needed
     },
     *onConnectError(requestDetail, error) {
-      console.error("Error in connect request:", requestDetail, error);
+      console.error("[ANYPROXY-CONNECT-ERROR] Connect error:", requestDetail.url, error.message || error);
       // Handle connect errors here if needed
     },
     *beforeSendRequest(requestDetail) {
+      if (verbose) {
+        console.log("[ANYPROXY-REQUEST] Intercepting:", requestDetail.url);
+      }
       const url = requestDetail.url;
       const urlPattern = /\.*.nvidiagrid\.net\/v2\/session/;
 
@@ -150,7 +153,7 @@ const options = {
             bodyJson.sessionRequestData.clientRequestMonitorSettings = [
               {
                 heightInPixels: 1440,
-                framesPerSecond: 60,
+                framesPerSecond: 120,
                 widthInPixels: 3440,
               },
             ];
@@ -231,47 +234,87 @@ function start(callback, failCallback) {
 }
 
 function handleCertElectronCertErrors() {
+  console.log("[CERT-HANDLER] Registering certificate-error event handler");
+
   app.on(
     "certificate-error",
     (event, webContents, url, error, certificate, callback) => {
+      console.log(`[CERT] EVENT FIRED! URL: ${url}, Error: ${error}, Issuer: ${certificate.issuerName}`);
+
       if (
         certificate.issuerName == "AnyProxy" &&
         /\.*.nvidiagrid\.net/.test(url)
       ) {
         // If the certificate is from AnyProxy, we allow it
         // This is necessary for the proxy to work correctly
+        console.log(`[CERT] Accepting AnyProxy certificate for ${url}`);
         event.preventDefault();
         callback(true);
         return;
       }
       console.error(
-        `Certificate error for ${url}: ${error} - Issuer: ${certificate.issuerName}`,
+        `[CERT] Rejecting certificate for ${url}: ${error} - Issuer: ${certificate.issuerName}`,
       );
+      callback(false);
     },
   );
+
+  // Also try the session-level event as a fallback
+  app.on('ready', () => {
+    console.log("[CERT-HANDLER] App ready, setting up session certificate verification");
+    const { session } = require('electron');
+    session.defaultSession.setCertificateVerifyProc((request, callback) => {
+      const { hostname, certificate, verificationResult, errorCode } = request;
+      console.log(`[CERT-VERIFY-PROC] Verifying: ${hostname}, Issuer: ${certificate.issuerName}, Error: ${errorCode}, Result: ${verificationResult}`);
+
+      // Accept AnyProxy certificates for nvidiagrid.net
+      if (hostname.endsWith('.nvidiagrid.net')) {
+        console.log(`[CERT-VERIFY-PROC] nvidiagrid.net detected - checking certificate`);
+        if (certificate.issuerName === 'AnyProxy') {
+          console.log(`[CERT-VERIFY-PROC] ✓ Accepting AnyProxy cert for ${hostname}`);
+          callback(0); // 0 = success
+          return;
+        }
+        console.log(`[CERT-VERIFY-PROC] ⚠ Certificate not from AnyProxy, issuer: ${certificate.issuerName}`);
+      }
+
+      callback(-2); // -2 = use Chromium's verification
+    });
+  });
 }
 
-function handleElectronSession(pacScriptUrl, callback) {
-  if (verbose) {
-    console.log("Setting proxy with PAC script URL:", pacScriptUrl);
-  }
+function handleElectronSession(pacScriptUrl, callback, targetSession) {
+  console.log("[ELECTRON-SESSION] Setting proxy with PAC script URL:", pacScriptUrl);
+
+  // Use provided session or default session
+  const sessionToUse = targetSession || session.defaultSession;
+  console.log("[ELECTRON-SESSION] Using session:", targetSession ? "custom partition" : "default");
 
   var proxyConfig = {
     mode: "pac_script",
     pacScript: pacScriptUrl,
   };
 
-  session.defaultSession
+  console.log("[ELECTRON-SESSION] Proxy config:", JSON.stringify(proxyConfig));
+
+  sessionToUse
     .setProxy(proxyConfig)
     .then(() => {
-      if (verbose) {
-        console.log("Proxy set successfully");
-      }
+      console.log("[ELECTRON-SESSION] Proxy set successfully");
+      // Verify the proxy resolution for different URLs
+      sessionToUse.resolveProxy("https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo")
+        .then((resolvedProxy) => {
+          console.log("[ELECTRON-SESSION] Resolved proxy for serverInfo:", resolvedProxy);
+        });
+      sessionToUse.resolveProxy("https://play.geforcenow.com")
+        .then((resolvedProxy) => {
+          console.log("[ELECTRON-SESSION] Resolved proxy for play.geforcenow.com:", resolvedProxy);
+        });
       if (callback) {
         callback();
       }
     })
-    .catch(() => console.error("Failed to set proxy"));
+    .catch((error) => console.error("[ELECTRON-SESSION] Failed to set proxy:", error));
 }
 
 function unhandleElectronSession() {

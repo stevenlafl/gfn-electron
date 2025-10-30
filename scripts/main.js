@@ -22,23 +22,33 @@ HardwareAcceleration.tryEnable();
 // This is crucial for maintaining stability, especially on systems with varying GPU capabilities.
 HardwareAcceleration.handleGPUCrash();
 
+// CRITICAL: Certificate error handler must be registered BEFORE app.ready
+// Otherwise Chromium will reject AnyProxy MITM certificates before the handler can accept them
+if (!disableMagic) {
+  const Proxy = require("./proxy.js");
+  Proxy.handleCertElectronCertErrors();
+  console.log("Certificate error handler registered");
+}
+
 app.whenReady().then(async () => await main());
 
 /// This is the main entry point for the GeForce NOW client application once electron app is ready.
 /// It initializes the application, sets up the main window, and handles various events.
 async function main() {
+  Shortcuts.register();
+  const mainWindow = await createWnd();
+
   if (!disableMagic) {
     console.log("Magic is enabled, setting up high resolution support.");
     console.warn(
       "WARN: Magic is experimental, you may experience issues, games may not start on the first try but will work on the second try.",
     );
-    await Magic.useHighResolutionSupport(debugMode);
+    // Pass the window's session so proxy is applied to the correct session
+    await Magic.useHighResolutionSupport(debugMode, mainWindow.webContents.session);
   } else {
     console.log("Magic is disabled, skipping high resolution support.");
   }
 
-  Shortcuts.register();
-  await createWnd();
   await Discord.setActivity("Home on GeForce NOW");
 }
 
@@ -49,7 +59,30 @@ async function createWnd() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: false,
       userAgent: Magic.fakeWindowsGFNUA(),
+      // Use custom partition to isolate session
+      partition: 'persist:gfn-no-sw',
     },
+  });
+
+  // Block service worker registration by overriding the API
+  mainWindow.webContents.on('did-start-loading', () => {
+    mainWindow.webContents.executeJavaScript(`
+      if ('serviceWorker' in navigator) {
+        console.log('[SW-BLOCK] Blocking service worker registration');
+        // Unregister any existing service workers
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for(let registration of registrations) {
+            registration.unregister();
+            console.log('[SW-BLOCK] Unregistered service worker:', registration.scope);
+          }
+        });
+        // Override register to prevent new registrations
+        navigator.serviceWorker.register = function() {
+          console.log('[SW-BLOCK] Service worker registration blocked');
+          return Promise.reject(new Error('Service workers disabled'));
+        };
+      }
+    `).catch(err => console.log('[SW-BLOCK] Failed to inject:', err.message));
   });
 
   var promise = null;
@@ -76,7 +109,8 @@ async function createWnd() {
     Utils.redirectConsoleLogInDevTools();
   }
 
-  return promise;
+  await promise;
+  return mainWindow;
 }
 
 app.on("activate", async function () {

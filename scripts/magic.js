@@ -8,7 +8,7 @@ var externalProxy = null;
 // and which should be accessed directly
 // proxy is used to override GeForceNOW body / headers for session requests to bypass restrictions for high monitor resolutions
 // the proxy fakes the GeForce NOW client and allows us to use the web version of GeForce NOW with custom resolutions
-async function useHighResolutionSupport(verbose) {
+async function useHighResolutionSupport(verbose, targetSession) {
   return new Promise((resolve) => {
     Proxy.setVerbose(verbose);
     Proxy.start(
@@ -19,10 +19,10 @@ async function useHighResolutionSupport(verbose) {
         }
         Proxy.servePacScript(proxy, (url) =>
           Proxy.handleElectronSession(url, () => {
-            Proxy.handleCertElectronCertErrors();
+            // Certificate error handler is now registered in main.js BEFORE app.ready
             console.log("High resolution support enabled");
             resolve();
-          }),
+          }, targetSession),
         );
       },
       () => {

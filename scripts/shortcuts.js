@@ -1,6 +1,8 @@
-const { app } = require("electron");
+const { app, BrowserWindow } = require("electron");
 const electronLocalshortcut = require("electron-localshortcut");
 const { switchFullscreenState } = require("./windowManager.js");
+
+const homePage = "https://play.geforcenow.com";
 
 function register() {
   electronLocalshortcut.register("Super+F", async () => {
